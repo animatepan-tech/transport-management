@@ -1,0 +1,3 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Login</title>
+<style>body{font-family:Arial;background:#f4f6f8}.box{max-width:380px;margin:100px auto;background:#fff;padding:25px;border-radius:8px}input{width:100%;padding:10px;margin:7px 0 15px;box-sizing:border-box}button{padding:10px 20px;background:#2563eb;color:#fff;border:0;border-radius:5px;width:100%}</style></head>
+<body><div class="box"><h2>Transport Management</h2><form method="post" action="{{ route('login.submit') }}">@csrf<label>Username</label><input name="username" autofocus><label>Password</label><input name="password" type="password"><button>Login</button></form></div></body></html>
