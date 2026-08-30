@@ -66,8 +66,7 @@ class WhatsAppFeeNotificationService
         );
 
         $allocated = round(
-            (float) $fee->allocations()
-                ->sum('amount'),
+            (float) $fee->allocations()->sum('amount'),
             2
         );
 
@@ -148,8 +147,6 @@ class WhatsAppFeeNotificationService
      *
      * transport_fee_due
      *
-     * For this event:
-     *
      * {{1}} Parent name
      * {{2}} Student name
      * {{3}} Next 3-month period
@@ -229,13 +226,6 @@ class WhatsAppFeeNotificationService
         |--------------------------------------------------------------------------
         | Calculate actual requirement for next three months
         |--------------------------------------------------------------------------
-        |
-        | If future fee records already exist, use their outstanding
-        | amounts for the relevant months.
-        |
-        | If a month has no generated fee, use the student's current
-        | monthly fee for that month.
-        |
         */
 
         $threeMonthRequired =
@@ -276,12 +266,6 @@ class WhatsAppFeeNotificationService
                 2
             )
         );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Existing advance already covers the amount
-        |--------------------------------------------------------------------------
-        */
 
         if ($amountToPay <= 0.01) {
             return $this->notRequired(
@@ -359,10 +343,8 @@ class WhatsAppFeeNotificationService
      *
      * For each month:
      *
-     * - If a generated fee covers that month, its outstanding
-     *   amount is spread proportionally across its covered months.
-     * - If no fee covers the month, student's current monthly fee
-     *   is used.
+     * - If a generated fee covers that month, use its outstanding amount.
+     * - If no fee covers that month, use student's current monthly fee.
      */
     private function calculateNextThreeMonthRequirement(
         Student $student,
@@ -401,21 +383,28 @@ class WhatsAppFeeNotificationService
                 $nextEnd
             )
         ) {
+            $monthStart = $currentMonth
+                ->copy()
+                ->startOfMonth();
 
-            $monthStart =
-                $currentMonth
-                    ->copy()
-                    ->startOfMonth();
-
-            $monthEnd =
-                $currentMonth
-                    ->copy()
-                    ->endOfMonth();
+            $monthEnd = $currentMonth
+                ->copy()
+                ->endOfMonth();
 
             /*
             |--------------------------------------------------------------------------
             | Find fee covering this calendar month
             |--------------------------------------------------------------------------
+            |
+            | Compare DATE values rather than timestamps.
+            |
+            | Example:
+            |
+            | fee period_end = 2026-08-31 00:00:00
+            | monthEnd        = 2026-08-31 23:59:59
+            |
+            | Timestamp comparison would incorrectly fail.
+            |
             */
 
             $coveringFee = $futureFees->first(
@@ -423,13 +412,14 @@ class WhatsAppFeeNotificationService
                     $monthStart,
                     $monthEnd
                 ) {
-
                     return (
                         $fee->period_start
-                            ->lte($monthStart)
+                            ->toDateString()
+                            <= $monthStart->toDateString()
                         &&
                         $fee->period_end
-                            ->gte($monthEnd)
+                            ->toDateString()
+                            >= $monthEnd->toDateString()
                     );
                 }
             );
@@ -441,7 +431,6 @@ class WhatsAppFeeNotificationService
             */
 
             if (!$coveringFee) {
-
                 $required = round(
                     $required
                     + (float) $student->monthly_fee,
@@ -485,7 +474,7 @@ class WhatsAppFeeNotificationService
 
             /*
             |--------------------------------------------------------------------------
-            | Number of months covered by this fee
+            | Number of calendar months covered by this fee
             |--------------------------------------------------------------------------
             */
 
@@ -518,8 +507,7 @@ class WhatsAppFeeNotificationService
 
             /*
             |--------------------------------------------------------------------------
-            | Allocate this fee's outstanding balance
-            | proportionally to each covered month.
+            | Allocate outstanding balance proportionally
             |--------------------------------------------------------------------------
             */
 
@@ -557,7 +545,6 @@ class WhatsAppFeeNotificationService
         float $outstanding,
         string $messageType
     ): array {
-
         $templateName = config(
             'whatsapp.template',
             'transport_fee_due'
@@ -585,6 +572,12 @@ class WhatsAppFeeNotificationService
             $periodEnd->format('d M Y')
         );
 
+        /*
+        |--------------------------------------------------------------------------
+        | Correct Unicode rupee symbol
+        |--------------------------------------------------------------------------
+        */
+
         $amountText =
             '₹'
             . number_format(
@@ -593,7 +586,6 @@ class WhatsAppFeeNotificationService
             );
 
         try {
-
             $result =
                 $this->whatsapp
                     ->driver()
@@ -623,7 +615,6 @@ class WhatsAppFeeNotificationService
             if (
                 !($result['success'] ?? false)
             ) {
-
                 $this->createLog(
                     $student,
                     $fee,
@@ -686,7 +677,6 @@ class WhatsAppFeeNotificationService
             ];
 
         } catch (Throwable $e) {
-
             $this->createLog(
                 $student,
                 $fee,
@@ -725,7 +715,6 @@ class WhatsAppFeeNotificationService
         ?string $messageId,
         ?string $error
     ): void {
-
         WhatsAppLog::create([
             'student_id' =>
                 $student->id,
@@ -797,7 +786,6 @@ class WhatsAppFeeNotificationService
     private function normalizePhone(
         ?string $phone
     ): ?string {
-
         if (!$phone) {
             return null;
         }
