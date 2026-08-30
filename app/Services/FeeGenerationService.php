@@ -3,25 +3,29 @@
 namespace App\Services;
 
 use App\Models\Fee;
-use App\Models\Payment;
 use App\Models\Student;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
 class FeeGenerationService
 {
+    public function __construct(
+        private readonly FeeAllocationService $feeAllocation
+    ) {
+    }
+
     /**
      * Generate fees for all active students.
      *
-     * Existing advance payments are automatically
-     * allocated to newly generated fees.
+     * Supported billing types:
      *
-     * Allocation order:
+     * monthly      = 1 month
+     * quarterly    = 3 months
+     * half_yearly  = 6 months
+     * yearly       = 12 months
      *
-     * 1. Oldest payment first
-     * 2. Within the new fee, payment is applied until
-     *    the fee is fully paid
-     * 3. Any unused payment remains as advance
+     * Existing unallocated payment balances are automatically
+     * allocated to the newly created fee.
      */
     public function generate(
         string $month,
@@ -33,27 +37,51 @@ class FeeGenerationService
         )->startOfMonth();
 
         $months = match ($billingType) {
-            'monthly' => 1,
-            'quarterly' => 3,
-            'half_yearly' => 6,
-            'yearly' => 12,
-            default => throw new \InvalidArgumentException(
-                'Invalid billing type.'
-            ),
+
+            'monthly' =>
+                1,
+
+            'quarterly' =>
+                3,
+
+            'half_yearly' =>
+                6,
+
+            'yearly' =>
+                12,
+
+            default =>
+                throw new \InvalidArgumentException(
+                    'Invalid billing type.'
+                ),
         };
 
         $end = $start
             ->copy()
-            ->addMonths($months - 1)
+            ->addMonths(
+                $months - 1
+            )
             ->endOfMonth();
 
         $created = 0;
+
         $skipped = 0;
+
         $skippedBeforeStartDate = 0;
+
         $skippedZeroAmount = 0;
 
+        /*
+        |--------------------------------------------------------------------------
+        | Generate for active students
+        |--------------------------------------------------------------------------
+        */
+
         Student::query()
-            ->where('active', true)
+            ->where(
+                'active',
+                true
+            )
             ->orderBy('id')
             ->chunkById(
                 100,
@@ -85,16 +113,13 @@ class FeeGenerationService
                                 |--------------------------------------------------------------------------
                                 | Student start-date protection
                                 |--------------------------------------------------------------------------
-                                |
-                                | If the student's transport/service start date
-                                | is after the entire billing period, do not
-                                | generate a fee.
-                                |
                                 */
 
                                 if (
-                                    $student->start_date &&
-                                    $student->start_date->gt($end)
+                                    $student->start_date
+                                    && $student->start_date->gt(
+                                        $end
+                                    )
                                 ) {
 
                                     $skippedBeforeStartDate++;
@@ -108,23 +133,24 @@ class FeeGenerationService
                                 |--------------------------------------------------------------------------
                                 */
 
-                                $overlapExists = Fee::query()
-                                    ->where(
-                                        'student_id',
-                                        $student->id
-                                    )
-                                    ->whereDate(
-                                        'period_start',
-                                        '<=',
-                                        $end->toDateString()
-                                    )
-                                    ->whereDate(
-                                        'period_end',
-                                        '>=',
-                                        $start->toDateString()
-                                    )
-                                    ->lockForUpdate()
-                                    ->exists();
+                                $overlapExists =
+                                    Fee::query()
+                                        ->where(
+                                            'student_id',
+                                            $student->id
+                                        )
+                                        ->whereDate(
+                                            'period_start',
+                                            '<=',
+                                            $end->toDateString()
+                                        )
+                                        ->whereDate(
+                                            'period_end',
+                                            '>=',
+                                            $start->toDateString()
+                                        )
+                                        ->lockForUpdate()
+                                        ->exists();
 
                                 if ($overlapExists) {
 
@@ -141,8 +167,10 @@ class FeeGenerationService
 
                                 $numberOfMonths =
                                     (
-                                        ($end->year - $start->year)
-                                        * 12
+                                        (
+                                            $end->year
+                                            - $start->year
+                                        ) * 12
                                     )
                                     + $end->month
                                     - $start->month
@@ -150,7 +178,7 @@ class FeeGenerationService
 
                                 /*
                                 |--------------------------------------------------------------------------
-                                | Calculate fee
+                                | Calculate fee amount
                                 |--------------------------------------------------------------------------
                                 */
 
@@ -180,7 +208,8 @@ class FeeGenerationService
                                 */
 
                                 $fee = Fee::create([
-                                    'student_id' => $student->id,
+                                    'student_id' =>
+                                        $student->id,
 
                                     'period_start' =>
                                         $start->toDateString(),
@@ -214,14 +243,18 @@ class FeeGenerationService
 
                                 /*
                                 |--------------------------------------------------------------------------
-                                | Apply existing advance payments
+                                | CENTRALIZED ADVANCE ALLOCATION
                                 |--------------------------------------------------------------------------
+                                |
+                                | FeeGenerationService no longer implements
+                                | payment allocation itself.
+                                |
                                 */
 
-                                $this->applyAdvanceToFee(
-                                    $student,
-                                    $fee
-                                );
+                                $this->feeAllocation
+                                    ->allocateAdvanceToFee(
+                                        $fee
+                                    );
                             }
                         );
                     }
@@ -229,170 +262,23 @@ class FeeGenerationService
             );
 
         return [
-            'created' => $created,
-            'skipped' => $skipped,
+            'created' =>
+                $created,
+
+            'skipped' =>
+                $skipped,
+
             'skipped_before_start_date' =>
                 $skippedBeforeStartDate,
+
             'skipped_zero_amount' =>
                 $skippedZeroAmount,
+
             'period_start' =>
                 $start->toDateString(),
+
             'period_end' =>
                 $end->toDateString(),
         ];
-    }
-
-    /**
-     * Apply available advance payments to a fee.
-     *
-     * Payments are consumed oldest-first.
-     */
-    protected function applyAdvanceToFee(
-        Student $student,
-        Fee $fee
-    ): void {
-
-        $totalRequired = round(
-            (float) $fee->amount
-            + (float) $fee->late_fee,
-            2
-        );
-
-        $remainingFee = round(
-            $totalRequired
-            - (float) $fee->paid_amount,
-            2
-        );
-
-        if ($remainingFee <= 0) {
-            return;
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Get student's payments oldest-first
-        |--------------------------------------------------------------------------
-        */
-
-        $payments = Payment::query()
-            ->where(
-                'student_id',
-                $student->id
-            )
-            ->orderBy('payment_date')
-            ->orderBy('id')
-            ->lockForUpdate()
-            ->get();
-
-        foreach ($payments as $payment) {
-
-            if ($remainingFee <= 0) {
-                break;
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Amount already allocated from this payment
-            |--------------------------------------------------------------------------
-            */
-
-            $allocatedAmount = (float) $payment
-                ->allocations()
-                ->sum('amount');
-
-            /*
-            |--------------------------------------------------------------------------
-            | Remaining advance on this payment
-            |--------------------------------------------------------------------------
-            */
-
-            $advanceAmount = round(
-                (float) $payment->amount
-                - $allocatedAmount,
-                2
-            );
-
-            if ($advanceAmount <= 0) {
-                continue;
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Allocate payment
-            |--------------------------------------------------------------------------
-            */
-
-            $allocationAmount = round(
-                min(
-                    $advanceAmount,
-                    $remainingFee
-                ),
-                2
-            );
-
-            if ($allocationAmount <= 0) {
-                continue;
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Create allocation
-            |--------------------------------------------------------------------------
-            */
-
-            $payment->allocations()->create([
-                'fee_id' =>
-                    $fee->id,
-
-                'amount' =>
-                    $allocationAmount,
-            ]);
-
-            /*
-            |--------------------------------------------------------------------------
-            | Update fee paid amount
-            |--------------------------------------------------------------------------
-            */
-
-            $fee->paid_amount = round(
-                (float) $fee->paid_amount
-                + $allocationAmount,
-                2
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Prevent overpayment on fee
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                $fee->paid_amount
-                >=
-                $totalRequired
-            ) {
-
-                $fee->paid_amount =
-                    $totalRequired;
-
-                $fee->status =
-                    'paid';
-
-                $remainingFee = 0;
-
-            } else {
-
-                $fee->status =
-                    'partial';
-
-                $remainingFee = round(
-                    $totalRequired
-                    - (float) $fee->paid_amount,
-                    2
-                );
-            }
-
-            $fee->save();
-        }
     }
 }
