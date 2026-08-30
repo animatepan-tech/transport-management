@@ -12,7 +12,6 @@ use App\Http\Controllers\ExpenseController;
 use App\Http\Controllers\FeeController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\WhatsAppController;
-use App\Http\Controllers\WhatsAppConfigController;
 
 
 /*
@@ -23,9 +22,7 @@ use App\Http\Controllers\WhatsAppConfigController;
 
 Route::get('/', function () {
 
-    return redirect()->route(
-        'login'
-    );
+    return redirect()->route('login');
 
 });
 
@@ -174,10 +171,13 @@ Route::middleware('simple.auth')->group(function () {
     |--------------------------------------------------------------------------
     |
     | /fees
-    |     = Fee Records
+    |          = Fee Records
     |
     | /fees/generate
-    |     = Generate Fees
+    |          = Generate Fees page
+    |
+    | POST /fees/generate
+    |          = Generate fee records
     |
     */
 
@@ -213,181 +213,98 @@ Route::middleware('simple.auth')->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | WhatsApp Configuration
+    | WhatsApp
+    |--------------------------------------------------------------------------
+    |
+    | WhatsApp credentials are NOT managed here.
+    |
+    | The active Meta configuration comes from:
+    |
+    | .env
+    |   ↓
+    | config/whatsapp.php
+    |   ↓
+    | WhatsAppManager
+    |   ↓
+    | MetaWhatsAppProvider
+    |
+    */
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | WhatsApp History / Dashboard
     |--------------------------------------------------------------------------
     */
 
-    Route::prefix('whatsapp')
-        ->name('whatsapp.')
-        ->group(function () {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Configuration page
-            |--------------------------------------------------------------------------
-            */
-
-            Route::get(
-                '/configuration',
-                [
-                    WhatsAppConfigController::class,
-                    'page',
-                ]
-            )->name('configuration');
+    Route::get(
+        '/whatsapp',
+        [WhatsAppController::class, 'index']
+    )->name('whatsapp.index');
 
 
-            /*
-            |--------------------------------------------------------------------------
-            | Configuration data
-            |--------------------------------------------------------------------------
-            */
+    /*
+    |--------------------------------------------------------------------------
+    | WhatsApp Message Creation
+    |--------------------------------------------------------------------------
+    */
 
-            Route::get(
-                '/configuration/data',
-                [
-                    WhatsAppConfigController::class,
-                    'show',
-                ]
-            )->name('configuration.data');
+    Route::get(
+        '/whatsapp/create',
+        [WhatsAppController::class, 'create']
+    )->name('whatsapp.create');
 
 
-            /*
-            |--------------------------------------------------------------------------
-            | Save configuration
-            |--------------------------------------------------------------------------
-            */
+    /*
+    |--------------------------------------------------------------------------
+    | Send WhatsApp Message
+    |--------------------------------------------------------------------------
+    */
 
-            Route::post(
-                '/configuration',
-                [
-                    WhatsAppConfigController::class,
-                    'store',
-                ]
-            )->name('configuration.store');
+    Route::post(
+        '/whatsapp',
+        [WhatsAppController::class, 'store']
+    )->name('whatsapp.store');
 
 
-            /*
-            |--------------------------------------------------------------------------
-            | Test configuration
-            |--------------------------------------------------------------------------
-            */
+    /*
+    |--------------------------------------------------------------------------
+    | Compatibility / Student Send Route
+    |--------------------------------------------------------------------------
+    |
+    | Existing student/WhatsApp UI can continue to use:
+    |
+    | POST /whatsapp/send/{student}
+    |
+    */
 
-            Route::post(
-                '/configuration/test',
-                [
-                    WhatsAppConfigController::class,
-                    'test',
-                ]
-            )->name('configuration.test');
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Enable / disable WhatsApp
-            |--------------------------------------------------------------------------
-            */
-
-            Route::post(
-                '/configuration/toggle',
-                [
-                    WhatsAppConfigController::class,
-                    'toggle',
-                ]
-            )->name('configuration.toggle');
+    Route::post(
+        '/whatsapp/send/{student}',
+        [WhatsAppController::class, 'send']
+    )->name('whatsapp.send');
 
 
-            /*
-            |--------------------------------------------------------------------------
-            | WhatsApp history / dashboard
-            |--------------------------------------------------------------------------
-            */
+    /*
+    |--------------------------------------------------------------------------
+    | Show One WhatsApp Log
+    |--------------------------------------------------------------------------
+    */
 
-            Route::get(
-                '/',
-                [
-                    WhatsAppController::class,
-                    'index',
-                ]
-            )->name('index');
+    Route::get(
+        '/whatsapp/{whatsappLog}',
+        [WhatsAppController::class, 'show']
+    )->name('whatsapp.show');
 
 
-            /*
-            |--------------------------------------------------------------------------
-            | Send WhatsApp page
-            |--------------------------------------------------------------------------
-            */
+    /*
+    |--------------------------------------------------------------------------
+    | Delete One WhatsApp Log
+    |--------------------------------------------------------------------------
+    */
 
-            Route::get(
-                '/create',
-                [
-                    WhatsAppController::class,
-                    'create',
-                ]
-            )->name('create');
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Send WhatsApp message
-            |--------------------------------------------------------------------------
-            */
-
-            Route::post(
-                '/',
-                [
-                    WhatsAppController::class,
-                    'store',
-                ]
-            )->name('store');
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Compatibility send route
-            |--------------------------------------------------------------------------
-            |
-            | Used by the existing WhatsApp student action.
-            |
-            */
-
-            Route::post(
-                '/send/{student}',
-                [
-                    WhatsAppController::class,
-                    'send',
-                ]
-            )->name('send');
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Show one WhatsApp log
-            |--------------------------------------------------------------------------
-            */
-
-            Route::get(
-                '/{whatsappLog}',
-                [
-                    WhatsAppController::class,
-                    'show',
-                ]
-            )->name('show');
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Delete one WhatsApp log
-            |--------------------------------------------------------------------------
-            */
-
-            Route::delete(
-                '/{whatsappLog}',
-                [
-                    WhatsAppController::class,
-                    'destroy',
-                ]
-            )->name('destroy');
-
-        });
+    Route::delete(
+        '/whatsapp/{whatsappLog}',
+        [WhatsAppController::class, 'destroy']
+    )->name('whatsapp.destroy');
 
 });
