@@ -6,11 +6,13 @@ use App\Models\Fee;
 use App\Models\Student;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 class FeeGenerationService
 {
     public function __construct(
-        private readonly FeeAllocationService $feeAllocation
+        private readonly FeeAllocationService $feeAllocation,
+        private readonly WhatsAppFeeNotificationService $whatsappFeeNotification
     ) {
     }
 
@@ -25,7 +27,10 @@ class FeeGenerationService
      * yearly       = 12 months
      *
      * Existing unallocated payment balances are automatically
-     * allocated to the newly created fee.
+     * allocated to newly generated fees.
+     *
+     * After successful fee creation/allocation, the application
+     * sends the WhatsApp fee notification.
      */
     public function generate(
         string $month,
@@ -71,9 +76,11 @@ class FeeGenerationService
 
         $skippedZeroAmount = 0;
 
+        $createdFeeIds = [];
+
         /*
         |--------------------------------------------------------------------------
-        | Generate for active students
+        | Generate fees for active students
         |--------------------------------------------------------------------------
         */
 
@@ -92,12 +99,13 @@ class FeeGenerationService
                     &$created,
                     &$skipped,
                     &$skippedBeforeStartDate,
-                    &$skippedZeroAmount
+                    &$skippedZeroAmount,
+                    &$createdFeeIds
                 ) {
 
                     foreach ($students as $student) {
 
-                        DB::transaction(
+                        $createdFeeId = DB::transaction(
                             function () use (
                                 $student,
                                 $start,
@@ -107,7 +115,7 @@ class FeeGenerationService
                                 &$skipped,
                                 &$skippedBeforeStartDate,
                                 &$skippedZeroAmount
-                            ) {
+                            ): ?int {
 
                                 /*
                                 |--------------------------------------------------------------------------
@@ -124,7 +132,7 @@ class FeeGenerationService
 
                                     $skippedBeforeStartDate++;
 
-                                    return;
+                                    return null;
                                 }
 
                                 /*
@@ -156,7 +164,7 @@ class FeeGenerationService
 
                                     $skipped++;
 
-                                    return;
+                                    return null;
                                 }
 
                                 /*
@@ -178,7 +186,7 @@ class FeeGenerationService
 
                                 /*
                                 |--------------------------------------------------------------------------
-                                | Calculate fee amount
+                                | Calculate fee
                                 |--------------------------------------------------------------------------
                                 */
 
@@ -190,15 +198,15 @@ class FeeGenerationService
 
                                 /*
                                 |--------------------------------------------------------------------------
-                                | Do not create zero-value fees
+                                | Do not create zero fees
                                 |--------------------------------------------------------------------------
                                 */
 
-                                if ($amount <= 0) {
+                                if ($amount <= 0.00) {
 
                                     $skippedZeroAmount++;
 
-                                    return;
+                                    return null;
                                 }
 
                                 /*
@@ -239,27 +247,98 @@ class FeeGenerationService
                                         0,
                                 ]);
 
-                                $created++;
-
                                 /*
                                 |--------------------------------------------------------------------------
-                                | CENTRALIZED ADVANCE ALLOCATION
+                                | Apply existing advance
                                 |--------------------------------------------------------------------------
-                                |
-                                | FeeGenerationService no longer implements
-                                | payment allocation itself.
-                                |
                                 */
 
                                 $this->feeAllocation
                                     ->allocateAdvanceToFee(
                                         $fee
                                     );
+
+                                $created++;
+
+                                return $fee->id;
                             }
                         );
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Remember created fee
+                        |--------------------------------------------------------------------------
+                        |
+                        | The WhatsApp API is intentionally NOT called from
+                        | inside the transaction.
+                        |
+                        */
+
+                        if ($createdFeeId !== null) {
+                            $createdFeeIds[] =
+                                $createdFeeId;
+                        }
                     }
                 }
             );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Send WhatsApp notifications AFTER financial transactions
+        |--------------------------------------------------------------------------
+        */
+
+        $whatsappSent = 0;
+
+        $whatsappSkipped = 0;
+
+        $whatsappFailed = 0;
+
+        foreach ($createdFeeIds as $feeId) {
+
+            try {
+
+                $fee = Fee::with('student')
+                    ->find($feeId);
+
+                if (!$fee) {
+                    continue;
+                }
+
+                $notification =
+                    $this->whatsappFeeNotification
+                        ->sendNewFeeNotification(
+                            $fee
+                        );
+
+                $status =
+                    $notification['status']
+                    ?? 'failed';
+
+                if (
+                    $status === 'accepted'
+                    || $status === 'sent'
+                ) {
+
+                    $whatsappSent++;
+
+                } elseif (
+                    $status === 'not_required'
+                    || $status === 'already_sent'
+                ) {
+
+                    $whatsappSkipped++;
+
+                } else {
+
+                    $whatsappFailed++;
+                }
+
+            } catch (Throwable $e) {
+
+                $whatsappFailed++;
+            }
+        }
 
         return [
             'created' =>
@@ -273,6 +352,15 @@ class FeeGenerationService
 
             'skipped_zero_amount' =>
                 $skippedZeroAmount,
+
+            'whatsapp_sent' =>
+                $whatsappSent,
+
+            'whatsapp_skipped' =>
+                $whatsappSkipped,
+
+            'whatsapp_failed' =>
+                $whatsappFailed,
 
             'period_start' =>
                 $start->toDateString(),

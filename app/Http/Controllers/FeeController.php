@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Fee;
 use App\Services\FeeGenerationService;
 use Illuminate\Http\Request;
 
@@ -13,7 +12,7 @@ class FeeController extends Controller
      */
     public function index()
     {
-        $fees = Fee::query()
+        $fees = \App\Models\Fee::query()
             ->with([
                 'student.bus',
             ])
@@ -33,33 +32,21 @@ class FeeController extends Controller
      */
     public function showGenerate()
     {
-        return view('fees.generate');
+        return view(
+            'fees.generate'
+        );
     }
 
     /**
-     * Generate fees for all active students.
+     * Generate fees for active students.
      *
-     * FeeGenerationService handles:
-     *
-     * - billing period calculation
-     * - monthly / quarterly / half-yearly / yearly billing
-     * - student start-date protection
-     * - overlapping fee protection
-     * - fee creation
-     * - existing advance payment allocation
-     * - fee paid amount updates
-     * - fee status updates
+     * After successful fee creation/allocation, the generation
+     * service sends the new-fee WhatsApp notification.
      */
     public function generate(
         Request $request,
         FeeGenerationService $feeGenerationService
     ) {
-        /*
-        |--------------------------------------------------------------------------
-        | Validate request
-        |--------------------------------------------------------------------------
-        */
-
         $data = $request->validate([
             'month' => [
                 'required',
@@ -72,46 +59,50 @@ class FeeController extends Controller
             ],
         ]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Generate fees
-        |--------------------------------------------------------------------------
-        |
-        | The service performs the actual generation and returns
-        | generation statistics.
-        |
-        */
-
-        $result = $feeGenerationService->generate(
-            $data['month'],
-            $data['billing_type']
-        );
-
-        /*
-        |--------------------------------------------------------------------------
-        | Read result counters safely
-        |--------------------------------------------------------------------------
-        */
+        $result =
+            $feeGenerationService->generate(
+                $data['month'],
+                $data['billing_type']
+            );
 
         $created = (int) (
-            $result['created'] ?? 0
+            $result['created']
+            ?? 0
         );
 
         $skipped = (int) (
-            $result['skipped'] ?? 0
+            $result['skipped']
+            ?? 0
         );
 
         $skippedBeforeStartDate = (int) (
-            $result['skipped_before_start_date'] ?? 0
+            $result['skipped_before_start_date']
+            ?? 0
         );
 
         $skippedZeroAmount = (int) (
-            $result['skipped_zero_amount'] ?? 0
+            $result['skipped_zero_amount']
+            ?? 0
+        );
+
+        $whatsappSent = (int) (
+            $result['whatsapp_sent']
+            ?? 0
+        );
+
+        $whatsappSkipped = (int) (
+            $result['whatsapp_skipped']
+            ?? 0
+        );
+
+        $whatsappFailed = (int) (
+            $result['whatsapp_failed']
+            ?? 0
         );
 
         /*
         |--------------------------------------------------------------------------
-        | Build success message
+        | Main generation message
         |--------------------------------------------------------------------------
         */
 
@@ -122,7 +113,7 @@ class FeeController extends Controller
 
         /*
         |--------------------------------------------------------------------------
-        | Overlapping fees
+        | Overlapping
         |--------------------------------------------------------------------------
         */
 
@@ -150,7 +141,7 @@ class FeeController extends Controller
 
         /*
         |--------------------------------------------------------------------------
-        | Zero monthly fee
+        | Zero amount
         |--------------------------------------------------------------------------
         */
 
@@ -164,12 +155,38 @@ class FeeController extends Controller
 
         /*
         |--------------------------------------------------------------------------
-        | Redirect
+        | WhatsApp
         |--------------------------------------------------------------------------
         */
 
+        if ($whatsappSent > 0) {
+
+            $message .=
+                ' '
+                . $whatsappSent
+                . ' WhatsApp fee notification(s) accepted by Meta.';
+        }
+
+        if ($whatsappSkipped > 0) {
+
+            $message .=
+                ' '
+                . $whatsappSkipped
+                . ' WhatsApp notification(s) were not required or were already sent.';
+        }
+
+        if ($whatsappFailed > 0) {
+
+            $message .=
+                ' '
+                . $whatsappFailed
+                . ' WhatsApp notification(s) failed.';
+        }
+
         return redirect()
-            ->route('fees.index')
+            ->route(
+                'fees.index'
+            )
             ->with(
                 'success',
                 $message

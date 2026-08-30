@@ -2,64 +2,206 @@
 
 namespace App\Console\Commands;
 
-use Illuminate\Console\Command;
-use App\Models\Fee;
-use App\Models\WhatsAppLog;
-use App\Services\WhatsAppService;
+use App\Models\Student;
+use App\Services\WhatsAppFeeNotificationService;
 use Carbon\Carbon;
+use Illuminate\Console\Command;
 
 class SendWhatsAppReminders extends Command
 {
-    protected $signature = 'fees:send-whatsapp-reminders';
-    protected $description = 'Send safe WhatsApp fee reminders after the fee period has ended';
+    protected $signature =
+        'fees:send-whatsapp-reminders';
 
-    public function handle(WhatsAppService $whatsapp): int
-    {
+    protected $description =
+        'Send three-month advance WhatsApp reminders after the latest completed billing period is fully paid';
+
+    public function handle(
+        WhatsAppFeeNotificationService $notificationService
+    ): int {
+
         $today = Carbon::today();
 
-        Fee::with('student.bus')
-            ->whereDate('period_end', '<', $today)
-            ->whereColumn('paid_amount', '<', 'amount')
-            ->chunkById(100, function ($fees) use ($whatsapp, $today) {
-                foreach ($fees as $fee) {
-                    $balance = round((float)$fee->amount + (float)$fee->late_fee - (float)$fee->paid_amount, 2);
+        $processed = 0;
+        $sent = 0;
+        $skipped = 0;
+        $failed = 0;
 
-                    // Final safety check: never send if there is no due.
-                    if ($balance <= 0 || !$fee->student?->whatsapp_number) {
-                        continue;
+        /*
+        |--------------------------------------------------------------------------
+        | Process active students
+        |--------------------------------------------------------------------------
+        |
+        | IMPORTANT:
+        |
+        | We process the LATEST completed fee for each student only.
+        |
+        */
+
+        Student::query()
+            ->where('active', true)
+            ->orderBy('id')
+            ->chunkById(
+                100,
+                function ($students) use (
+                    $notificationService,
+                    $today,
+                    &$processed,
+                    &$sent,
+                    &$skipped,
+                    &$failed
+                ) {
+
+                    foreach ($students as $student) {
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Find latest completed fee
+                        |--------------------------------------------------------------------------
+                        */
+
+                        $completedFee =
+                            $student->fees()
+                                ->whereDate(
+                                    'period_end',
+                                    '<',
+                                    $today
+                                )
+                                ->orderByDesc(
+                                    'period_end'
+                                )
+                                ->orderByDesc(
+                                    'id'
+                                )
+                                ->first();
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | No completed fee
+                        |--------------------------------------------------------------------------
+                        */
+
+                        if (!$completedFee) {
+
+                            $skipped++;
+
+                            continue;
+                        }
+
+                        $processed++;
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Verify the latest completed fee is fully paid
+                        |--------------------------------------------------------------------------
+                        */
+
+                        $totalRequired = round(
+                            (float) $completedFee->amount
+                            + (float) $completedFee->late_fee,
+                            2
+                        );
+
+                        $allocated = round(
+                            (float) $completedFee
+                                ->allocations()
+                                ->sum('amount'),
+                            2
+                        );
+
+                        $outstanding = max(
+                            0,
+                            round(
+                                $totalRequired
+                                - $allocated,
+                                2
+                            )
+                        );
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Latest completed period is not fully paid
+                        |--------------------------------------------------------------------------
+                        |
+                        | Do NOT send the 3-month advance request.
+                        |
+                        */
+
+                        if ($outstanding > 0.01) {
+
+                            $skipped++;
+
+                            continue;
+                        }
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Send three-month request
+                        |--------------------------------------------------------------------------
+                        */
+
+                        $result =
+                            $notificationService
+                                ->sendThreeMonthAdvanceRequest(
+                                    $student,
+                                    $completedFee
+                                );
+
+                        $status =
+                            $result['status']
+                            ?? 'failed';
+
+                        if (
+                            $status === 'accepted'
+                            || $status === 'sent'
+                        ) {
+
+                            $sent++;
+
+                        } elseif (
+                            $status === 'not_required'
+                            || $status === 'already_sent'
+                        ) {
+
+                            $skipped++;
+
+                        } else {
+
+                            $failed++;
+                        }
                     }
-
-                    // One due reminder per fee per day.
-                    $already = WhatsAppLog::where('fee_id', $fee->id)
-                        ->where('message_type', 'due')
-                        ->whereDate('created_at', $today)
-                        ->exists();
-
-                    if ($already) continue;
-
-                    $result = $whatsapp->sendDueReminder($fee, $balance);
-
-                    WhatsAppLog::create([
-                        'student_id' => $fee->student_id,
-                        'fee_id' => $fee->id,
-                        'phone' => $fee->student->whatsapp_number,
-                        'template_name' => $result['template'] ?? null,
-                        'message_type' => 'due',
-                        'balance_at_send' => $balance,
-                        'status' => $result['status'],
-                        'provider_message_id' => $result['message_id'] ?? null,
-                        'error_message' => $result['error'] ?? null,
-                        'sent_at' => $result['status'] === 'sent' ? now() : null,
-                    ]);
-
-                    $fee->update([
-                        'last_reminder_at' => now(),
-                        'reminder_count' => $fee->reminder_count + 1,
-                    ]);
                 }
-            });
+            );
 
-        $this->info('Reminder scan completed.');
+        /*
+        |--------------------------------------------------------------------------
+        | Console summary
+        |--------------------------------------------------------------------------
+        */
+
+        $this->info(
+            'Three-month WhatsApp reminder scan completed.'
+        );
+
+        $this->line(
+            'Students processed: '
+            . $processed
+        );
+
+        $this->line(
+            'Messages accepted: '
+            . $sent
+        );
+
+        $this->line(
+            'Skipped: '
+            . $skipped
+        );
+
+        $this->line(
+            'Failed: '
+            . $failed
+        );
+
         return self::SUCCESS;
     }
 }
